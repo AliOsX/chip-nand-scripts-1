@@ -1,0 +1,57 @@
+#!/bin/bash
+
+SCRIPTDIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
+source $SCRIPTDIR/chip_nand_scripts_common
+
+require mkenvimage "Please install from http://git.denx.de/u-boot.git"
+
+usage() {
+  echo -e "\n\
+  usage: $(basename $0) [options] INPUTFILE\n\
+\n
+  options:\n\
+    -N FILENAME         - read nand configuration from FILENAME\n\
+    -S ENV_SIZE         - create environment of ENV_SIZE bytes (default: NAND_ERASE_BLOCK_SIZE)\n\
+    -d OUTPUTDIR        - write file to OUTPUTDIR (default: .)\n\
+    -o OUTPUTFILE       - write to OUTPUTFILE (default: uboot-env-<NAND_EBSIZE>.bin)n\
+    -h, --help          - show this help\n\
+\n"
+  exit 1
+}
+
+while getopts ":N:d:o:S:" o; do
+    case "${o}" in
+        N)
+	    read_nand_config "${OPTARG}"
+            ;;
+        S)
+	    size="${OPTARG}"
+            ;;
+        o)
+            outputfile=${OPTARG}
+            ;;
+        d)
+            outputdir=${OPTARG}
+            ;;
+        *)
+            usage
+            ;;
+    esac
+done
+shift $((OPTIND-1))
+
+size=${size:-NAND_ERASE_BLOCK_SIZE}
+size=${size?Specify either NAND type or environment size}
+hexsize=`printf %x $size`
+
+outputdir="${outputdir:-.}"
+outputfile="${outputfile:-$outputdir/uboot-env-$hexsize.bin}"
+input="${1?No input file given}"
+
+if [ ! -f "${input}" ]; then
+  echo "$(basename 0): ERROR: input file \"${input}\" does not exist"
+  exit 1
+fi
+
+echo mkenvimage -s $size -o $outputfile $input 
+mkenvimage -s $size -o $outputfile $input 

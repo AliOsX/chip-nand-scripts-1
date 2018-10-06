@@ -1,0 +1,85 @@
+#!/bin/bash
+
+SCRIPTDIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
+source $SCRIPTDIR/chip_nand_scripts_common
+
+require mkfs.ubifs "Please install mtd-utils"
+
+# build the UBIFS image
+prepare_ubifs() {
+  local outputfile="$1"
+  local rootfstar="$2"
+  local nandtype="$3"
+  local maxlebcount="$4"
+  local eraseblocksize="$5"
+  local pagesize="$6"
+  local subpagesize="$7"
+  local compression="${8:-lzo}"
+  local tmpdir=`mktemp -d -t chip-ubi-XXXXXX`
+  local rootfs=$tmpdir/rootfs
+
+  if [ -z $subpagesize ]; then
+    subpagesize=$pagesize
+  fi
+
+  if [ "$nandtype" = "mlc" ]; then
+    lebsize=$((eraseblocksize/2-$pagesize*2))
+  elif [ $subpagesize -lt $pagesize ]; then
+    lebsize=$((eraseblocksize-pagesize))
+  else
+    lebsize=$((eraseblocksize-pagesize*2))
+  fi
+
+  fakeroot /bin/bash <<EOF
+mkdir -p $rootfs
+tar -xf $rootfstar -C $rootfs
+echo mkfs.ubifs -d $rootfs -m $pagesize -e $lebsize -c $maxlebcount -o $outputfile -x $compression
+mkfs.ubifs -d $rootfs -m $pagesize -e $lebsize -c $maxlebcount -o $outputfile -x $compression ||exit 1
+EOF
+
+  rm -rf $tmpdir
+}
+
+
+usage() {
+  echo -e "\n\
+  usage: $(basename $0) [options] INPUTFILE\n\
+\n
+  options:\n\
+    -N FILENAME		- read nand configuration from FILENAME\n\
+    -d OUTPUTDIR        - write file to OUTPUTDIR (default: .)\n\
+    -o OUTPUTFILE       - write to OUTPUTFILE (default: rootfs-$NAND_TYPE-$NAND_MAXLEB_COUNT-$NAND_EBSIZE-$NAND_PSIZE-$NAND_OSIZE.ubifs)\n\
+    -h, --help          - show this help\n\
+\n"
+  exit 1
+}
+
+
+while getopts ":N:d:o:c:" o; do
+    case "${o}" in
+        N)
+	    read_nand_config "${OPTARG}"
+            ;;
+        o)
+            outputfile=${OPTARG}
+            ;;
+        d)
+            outputdir=${OPTARG}
+            ;;
+        c)
+            COMPRESSION=${OPTARG}
+            ;;
+        *)
+            usage
+            ;;
+    esac
+done
+shift $((OPTIND-1))
+
+COMPRESSION=${COMPRESSION:-lzo}
+outputdir=${outputdir:-.}
+outputfile=${outputfile:-$outputdir/rootfs-$NAND_TYPE-$NAND_MAXLEB_COUNT-$NAND_EBSIZE-$NAND_PSIZE-$NAND_OSIZE.ubifs}
+inputfile=$1
+
+echo prepare_ubifs $outputfile $inputfile $NAND_TYPE $NAND_MAXLEB_COUNT $NAND_ERASE_BLOCK_SIZE $NAND_PAGE_SIZE $NAND_SUBPAGE_SIZE $COMPRESSION
+prepare_ubifs $outputfile $inputfile $NAND_TYPE $NAND_MAXLEB_COUNT $NAND_ERASE_BLOCK_SIZE $NAND_PAGE_SIZE $NAND_SUBPAGE_SIZE $COMPRESSION

@@ -1,0 +1,90 @@
+#!/bin/bash
+
+SCRIPTDIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
+source $SCRIPTDIR/chip_nand_scripts_common
+
+require sunxi-nand-image-builder "Please install from http://github.com/linux-sunxi/sunxi-tools."
+
+# build the SPL image
+prepare_spl() {
+  local tmpdir=`mktemp -d -t chip-spl-XXXXXX`
+  local nandrepeatedspl=$1
+  local spl=$2
+  local eraseblocksize=$3
+  local pagesize=$4
+  local oobsize=$5
+  local repeat=$((eraseblocksize/pagesize/64))
+  local nandspl=$tmpdir/nand-spl.bin
+  local nandpaddedspl=$tmpdir/nand-padded-spl.bin
+  local padding=$tmpdir/padding
+  local splpadding=$tmpdir/nand-spl-padding
+
+  echo sunxi-nand-image-builder -c 64/1024 -p $pagesize -o $oobsize -u 1024 -e $eraseblocksize -b -s $spl $nandspl
+  sunxi-nand-image-builder -c 64/1024 -p $pagesize -o $oobsize -u 1024 -e $eraseblocksize -b -s $spl $nandspl
+
+  local splsize=`filesize $nandspl`
+  local paddingsize=$((64-(splsize/(pagesize+oobsize))))
+  local i=0
+
+  while [ $i -lt $repeat ]; do
+    dd if=/dev/urandom of=$padding bs=1024 count=$paddingsize
+    echo sunxi-nand-image-builder -c 64/1024 -p $pagesize -o $oobsize -u 1024 -e $eraseblocksize -b -s $padding $splpadding
+    sunxi-nand-image-builder -c 64/1024 -p $pagesize -o $oobsize -u 1024 -e $eraseblocksize -b -s $padding $splpadding
+    cat $nandspl $splpadding > $nandpaddedspl
+
+    if [ "$i" -eq "0" ]; then
+      cat $nandpaddedspl > $nandrepeatedspl
+    else
+      cat $nandpaddedspl >> $nandrepeatedspl
+    fi
+
+    i=$((i+1))
+  done
+
+  rm -rf $tmpdir
+}
+
+usage() {
+  echo -e "\n\
+  usage: $(basename $0) [options] INPUTFILE\n\
+\n
+  options:\n\
+    -N FILENAME		- read nand configuration from FILENAME\n\
+    -d OUTPUTDIR    - write to output directory (default: current directory)\n\
+    -o OUTPUTFILE   - write to output file (if no absolute path is given, it will go to OUTPUTDIR)\n\
+    -h, --help          - show this help\n\
+\n"
+  exit 1
+}
+
+
+while getopts ":N:d:o:" o; do
+    case "${o}" in
+        N)
+            nand_config="${OPTARG}"
+            ;;
+        o)
+            outputfile="${OPTARG}"
+            ;;
+        d)
+            outputdir="${OPTARG}"
+            ;;
+        *)
+            usage
+            ;;
+    esac
+done
+shift $((OPTIND-1))
+
+[[ -z "${nand_config}" ]] && echo "ERROR: no nand configuration specified" && usage && exit
+read_nand_config "${nand_config}"
+
+outputdir=${outputdir:-$PWD}
+outputfile=${outputfile:-$outputdir/spl-$NAND_EBSIZE-$NAND_PSIZE-$NAND_OSIZE.bin}
+input_file=$1
+
+[[ -z "${input_file}" ]] && echo "ERROR: no input file specified" && usage && exit
+ 
+ 
+echo prepare_spl $outputfile $input_file $NAND_ERASE_BLOCK_SIZE $NAND_PAGE_SIZE $NAND_OOB_SIZE
+prepare_spl $outputfile $input_file $NAND_ERASE_BLOCK_SIZE $NAND_PAGE_SIZE $NAND_OOB_SIZE

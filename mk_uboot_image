@@ -1,0 +1,53 @@
+#!/bin/bash
+
+SCRIPTDIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
+source $SCRIPTDIR/chip_nand_scripts_common
+
+# build the bootloader image
+prepare_uboot() {
+  local paddeduboot=$1
+  local uboot=$2
+  local eraseblocksize=$3
+  local ebsize=$4
+
+  
+  echo dd if=$uboot of=$paddeduboot bs=$eraseblocksize conv=sync
+  dd if=$uboot of=$paddeduboot bs=$eraseblocksize conv=sync
+}
+
+usage() {
+  echo -e "\n\
+  usage: $(basename $0) [options] INPUTFILE\n\
+\n
+  options:\n\
+    -N FILENAME		- read nand configuration from FILENAME\n\
+    -d OUTPUTDIR        - write file to OUTPUTDIR (default: .)\n\
+    -o OUTPUTFILE       - write to OUTPUTFILE (default: uboot-<NAND_EBSIZE>.bin)n\
+    -h, --help          - show this help\n\
+\n"
+  exit 1
+}
+
+while getopts ":N:d:o:" o; do
+    case "${o}" in
+        N)
+            read_nand_config "${OPTARG}"
+            ;;
+        o)
+            outputfile=${OPTARG}
+            ;;
+        d)
+            outputdir=${OPTARG}
+            ;;
+        *)
+            usage
+            ;;
+    esac
+done
+shift $((OPTIND-1))
+
+outputdir="${outputdir:-.}"
+outputfile="${outputfile:-$outputdir/uboot-$NAND_EBSIZE.bin}"
+inputfile="$1"
+
+prepare_uboot "${outputfile}" "${inputfile}" $NAND_ERASE_BLOCK_SIZE $NAND_EBSIZE

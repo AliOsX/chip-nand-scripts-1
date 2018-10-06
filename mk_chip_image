@@ -1,0 +1,240 @@
+#!/bin/bash
+
+SCRIPTDIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
+source $SCRIPTDIR/chip_nand_scripts_common
+
+require sunxi-nand-image-builder "Please install from http://github.com/linux-sunxi/sunxi-tools."
+require mkenvimage "Please install from http://git.denx.de/u-boot.git"
+require mkfs.ubifs "Please install mtd-utils"
+require ubinize "Please install mtd-utils"
+require img2simg "Please install fastboot-utils"
+
+function usage() {
+  echo -e "\n\
+usage: $(basename $0) <nand-type> <image-type> <input-file> [output-file]\n\
+\n\
+  <nand-type> can be: hynix-mlc, toshiba-mlc, toshiba-slc\n\
+  <image-type> can be: spl, u-boot, u-boot-env, ubifs, ubi\n\
+\n\
+options:\n\
+  -o OUTPUT_DIR  - write output to OUTPUT_DIR unless [output-file] is specified\n\
+                   (default: current directory)\n\
+  -e ENV_SIZE    - specify U-Boot-Environment size (default: NAND block size)\n\
+  -c UBINIZE_CFG - specify ubinize.cfg\n\
+  -h, --help     - show this help\n\
+\n"
+  exit 1
+}
+
+function prepare_spl() {
+  local spl=$1
+  local nandrepeatedspl=$2
+  local eraseblocksize=$3
+  local pagesize=$4
+  local oobsize=$5
+  local repeat=$((eraseblocksize/pagesize/64))
+  local nandspl=$tmp_dir/nand-spl.bin
+  local nandpaddedspl=$tmp_dir/nand-padded-spl.bin
+  local padding=$tmp_dir/padding
+  local splpadding=$tmp_dir/nand-spl-padding
+
+
+  echo sunxi-nand-image-builder -c 64/1024 -p $pagesize -o $oobsize -u 1024 -e $eraseblocksize -b -s $spl $nandspl
+  sunxi-nand-image-builder -c 64/1024 -p $pagesize -o $oobsize -u 1024 -e $eraseblocksize -b -s $spl $nandspl
+
+  local splsize=`filesize $nandspl`
+  local paddingsize=$((64-(splsize/(pagesize+oobsize))))
+  local i=0
+
+  while [ $i -lt $repeat ]; do
+    dd if=/dev/urandom of=$padding bs=1024 count=$paddingsize
+    echo sunxi-nand-image-builder -c 64/1024 -p $pagesize -o $oobsize -u 1024 -e $eraseblocksize -b -s $padding $splpadding
+    sunxi-nand-image-builder -c 64/1024 -p $pagesize -o $oobsize -u 1024 -e $eraseblocksize -b -s $padding $splpadding
+    cat $nandspl $splpadding > $nandpaddedspl
+
+    if [ "$i" -eq "0" ]; then
+      cat $nandpaddedspl > $nandrepeatedspl
+    else
+      cat $nandpaddedspl >> $nandrepeatedspl
+    fi
+
+    i=$((i+1))
+  done
+}
+
+function prepare_uboot() {
+  local uboot=$1
+  local paddeduboot=$2
+  local eraseblocksize=$3
+  local ebsize=$4
+  
+  echo dd if=$uboot of=$paddeduboot bs=$eraseblocksize conv=sync
+  dd if=$uboot of=$paddeduboot bs=$eraseblocksize conv=sync
+}
+
+function prepare_ubifs() {
+  local rootfstar="$1"
+  local outputfile="$2"
+  local nandtype="$3"
+  local maxlebcount="$4"
+  local eraseblocksize="$5"
+  local pagesize="$6"
+  local subpagesize="$7"
+  local compression="${8:-lzo}"
+  local rootfs=$tmp_dir/rootfs
+
+  if [ -z $subpagesize ]; then
+    subpagesize=$pagesize
+  fi
+
+  if [ "$nandtype" = "mlc" ]; then
+    lebsize=$((eraseblocksize/2-$pagesize*2))
+  elif [ $subpagesize -lt $pagesize ]; then
+    lebsize=$((eraseblocksize-pagesize))
+  else
+    lebsize=$((eraseblocksize-pagesize*2))
+  fi
+
+  fakeroot /bin/bash <<EOF
+mkdir -p $rootfs
+tar -xf $rootfstar -C $rootfs
+echo mkfs.ubifs -d $rootfs -m $pagesize -e $lebsize -c $maxlebcount -o $outputfile -x $compression
+mkfs.ubifs -d $rootfs -m $pagesize -e $lebsize -c $maxlebcount -o $outputfile -x $compression
+EOF
+}
+
+function create_default_ubinize_cfg() {
+    local ubifs="$1"
+    local ubinize_cfg="$2"
+
+    echo -n "Create default ubinize.cfg including MLC fixed nand size work around in $ubinize_cfg..."
+
+    echo "\
+[rootfs]
+mode=ubi
+vol_id=0
+${NAND_UBI_VOLSPEC}
+vol_type=dynamic
+vol_name=rootfs
+vol_alignment=1
+image=${ubifs}\
+" > "${ubinize_cfg}"
+    echo OK
+    cat "$ubinize_cfg"
+}
+
+function prepare_ubi() {
+  local ubicfg="$1"
+  local ubi="$2"
+  local nandtype="$3"
+  local maxlebcount="$4"
+  local eraseblocksize="$5"
+  local pagesize="$6"
+  local subpagesize="$7"
+
+  local sparseubi="${ubi}.sparse"
+  local mlcopts=""
+
+  if [ -z $subpagesize ]; then
+    subpagesize=$pagesize
+  fi
+
+  if [ "$nandtype" = "mlc" ]; then
+    lebsize=$((eraseblocksize/2-$pagesize*2))
+    mlcopts="-M dist3"
+  elif [ $subpagesize -lt $pagesize ]; then
+    lebsize=$((eraseblocksize-pagesize))
+  else
+    lebsize=$((eraseblocksize-pagesize*2))
+  fi
+
+  echo ubinize -o $ubi -p $eraseblocksize -m $pagesize -s $subpagesize $mlcopts $ubicfg
+  ubinize -o $ubi -p $eraseblocksize -m $pagesize -s $subpagesize $mlcopts $ubicfg
+  img2simg $ubi $sparseubi $eraseblocksize
+}
+
+
+
+## parse command line options
+while getopts ":o:e:c:" o; do
+    case "${o}" in
+        o)
+            output_dir="${OPTARG}"
+            ;;
+        e)
+	        envsize="${OPTARG}"
+            ;;
+        c)
+            ubinize_cfg=${OPTARG}
+            ;;
+        *)
+            usage
+            ;;
+    esac
+done
+shift $((OPTIND-1))
+
+## check for correct number of arguments
+[ "$#" -lt 3 ] && usage
+
+nand_config=${1}
+ image_type=${2}
+ input_file=${3}
+output_file=${4}
+
+[[ -z "${nand_config}" ]] && echo "ERROR: no nand configuration specified" && usage
+case "${nand_config}" in
+    hynix-mlc)
+        read_nand_config "Hynix-MLC.config"
+        ;;
+    toshiba-mlc)
+        read_nand_config "Toshiba-MLC.config"
+        ;;
+    toshiba-slc)
+        read_nand_config "Toshiba-SLC-4G-TC58NVG2S0H.config"
+        ;;
+    *)
+        echo "ERROR: invalid nand-type '${nand_type}'" && usage
+        ;;
+esac
+
+[[ -z "${image_type}" ]] && echo "ERROR: no image type specified" && usage
+[[ -z "${input_file}" ]] && echo "ERROR: no input file specified" && usage
+[[ ! -f "${input_file}" ]] && echo "ERROR: input file '${input_file}' doesn't not exist" && usage
+output_dir="${output_dir:-$PWD}"
+[[ ! -d "${output_dir}" ]] && echo "ERROR: invalid output directory '${output_dir}'" && usage
+  
+export tmp_dir=`mktemp -d -t mk_chip_image_XXXXXX`
+
+
+case "${image_type}" in
+    spl)
+        output_file="${output_file:-$output_dir/spl-$nand_config-$NAND_EBSIZE-$NAND_PSIZE-$NAND_OSIZE.bin}"
+        prepare_spl "${input_file}" "${output_file}" $NAND_ERASE_BLOCK_SIZE $NAND_PAGE_SIZE $NAND_OOB_SIZE
+        ;;
+    u-boot)
+        output_file="${output_file:-$output_dir/uboot-$NAND_EBSIZE.bin}"
+        prepare_uboot "${input_file}" "${output_file}" $NAND_ERASE_BLOCK_SIZE $NAND_EBSIZE
+        ;;
+    u-boot-env)
+        envsize=${envsize:-$NAND_ERASE_BLOCK_SIZE}
+        envsize_hex=`printf %x $envsize`
+        output_file="${output_file:-$output_dir/uboot-env-$envsize_hex.bin}"
+        echo mkenvimage -s $envsize -o $output_file $input_file
+        mkenvimage -s $envsize -o "${output_file}" "${input_file}"
+        ;;
+    ubifs)
+        COMPRESSION=${COMPRESSION:-lzo}
+        output_file="${output_file:-$output_dir/rootfs-${nand_config}-$NAND_MAXLEB_COUNT-$NAND_EBSIZE-$NAND_PSIZE-$NAND_OSIZE.ubifs}"
+        prepare_ubifs "${input_file}" "${output_file}" $NAND_TYPE $NAND_MAXLEB_COUNT $NAND_ERASE_BLOCK_SIZE $NAND_PAGE_SIZE $NAND_SUBPAGE_SIZE $COMPRESSION
+        ;;
+    ubi)
+        [[ -z "${ubinize_cfg}" ]] && export ubinize_cfg="${tmp_dir}/ubinize.cfg" && create_default_ubinize_cfg ${input_file} "$ubinize_cfg"
+        output_file="${output_file:-$output_dir/chip-${nand_config}-$NAND_EBSIZE-$NAND_PSIZE.ubi}"
+        prepare_ubi "${ubinize_cfg}" "${output_file}" $NAND_TYPE $NAND_MAXLEB_COUNT $NAND_ERASE_BLOCK_SIZE $NAND_PAGE_SIZE $NAND_SUBPAGE_SIZE
+        ;;
+    *)
+        echo "ERROR: invalid image-type '${image_type}'" && usage
+esac
+
+rm -rf $tmp_dir

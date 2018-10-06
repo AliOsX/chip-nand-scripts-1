@@ -1,0 +1,97 @@
+#!/bin/bash
+
+SCRIPTDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+source "$SCRIPTDIR/chip_nand_scripts_common"
+
+
+usage() {
+  echo -e "\n\
+  usage: $(basename $0) [options] BUILDROOT_DIR\n\
+\n
+  options:\n\
+    -N FILENAME         - read nand configuration from FILENAME\n\
+    -d OUTPUTDIR        - write files to OUTPUTDIR (default: .)\n\
+    -u FILENAME         - read u-boot environment from FILENAME\n\
+    -S SIZE             - u-boot environment SIZE in bytes\n\
+    -h, --help          - show this help\n\
+\n"
+  exit 1
+}
+
+
+while getopts ":N:d:u:S:" o; do
+    case "${o}" in
+        N)
+            NAND_CONFIG="${OPTARG}"
+            echo "NAND_CONFIG=${OPTARG}"
+            read_nand_config "${OPTARG}"
+            ;;
+        d)
+            outputdir="${OPTARG}"
+            echo "outputdir=${OPTARG}"
+            ;;
+        u)
+            ubootenv="${OPTARG}"
+            echo "ubootenv=${OPTARG}"
+            ;;
+        S)
+            ubootenv_size="${OPTARG}"
+            echo "ubootenv_size=${OPTARG}"
+            ;;
+        *)
+            usage
+            ;;
+    esac
+done
+shift $((OPTIND-1))
+
+INPUT_DIR="${1?no Buildroot directory specified}" || exit 1
+ubootenv_size="${ubootenv_size?no uboot environment size specified}" || exit 1
+ubootenv="${ubootenv?no uboot environment file specified}" || exit 1
+NAND_CONFIG="${NAND_CONFIG?no NAND config specified}" || exit 1
+outputdir="${outputdir:-.}"
+
+tmpdir=`mktemp -d -t mk_buildroot_images_XXXXXX`
+
+if [ "${ubootenv:0:1}" != "/" ] && [ "${ubootenv:0:2}" != ".." ]; then
+  ubootenv="${INPUT_DIR}/${ubootenv}"
+fi
+
+echo "## creating SPL image" 
+echo "${SCRIPTDIR}/mk_spl_image" -N "${NAND_CONFIG}" -d "${outputdir}" "${INPUT_DIR}"/output/images/sunxi-spl.bin
+"${SCRIPTDIR}/mk_spl_image" -N "${NAND_CONFIG}" -d "${outputdir}" "${INPUT_DIR}"/output/images/sunxi-spl.bin
+
+echo "## creating uboot image" 
+echo "${SCRIPTDIR}/mk_uboot_image" -N "${NAND_CONFIG}" -d "${outputdir}" "${INPUT_DIR}"/output/images/u-boot-dtb.bin
+"${SCRIPTDIR}/mk_uboot_image" -N "${NAND_CONFIG}" -d "${outputdir}" "${INPUT_DIR}"/output/images/u-boot-dtb.bin
+
+echo "## creating uboot-env image" 
+echo "${SCRIPTDIR}/mk_uboot_env_image" -S ${ubootenv_size} -d "${outputdir}" "${ubootenv}"
+"${SCRIPTDIR}/mk_uboot_env_image" -S ${ubootenv_size} -d "${outputdir}" "${ubootenv}"
+
+echo "## creating ubifs image" 
+echo "${SCRIPTDIR}/mk_ubifs_image" -N "${NAND_CONFIG}" -o "${outputdir}/rootfs.ubifs" "${INPUT_DIR}"/output/images/rootfs.tar
+"${SCRIPTDIR}/mk_ubifs_image" -N "${NAND_CONFIG}" -o "${outputdir}/rootfs.ubifs" "${INPUT_DIR}"/output/images/rootfs.tar
+
+echo "## creating ubi image" 
+echo "WARNING: not applying MLC fixed nand size work around..."
+ubinizie_cfg="${tmpdir}/ubinize.cfg"
+echo "[rootfs]
+mode=ubi
+vol_id=0
+vol_type=dynamic
+vol_name=rootfs
+vol_alignment=1
+vol_flags=autoresize
+image=${outputdir}/rootfs.ubifs" > "${ubinize_cfg}"
+
+echo "${SCRIPTDIR}/mk_ubi_image" -N "${NAND_CONFIG}" -c "${ubinize_cfg} -d "${outputdir}" "${outputdir}"/rootfs.ubifs
+"${SCRIPTDIR}/mk_ubi_image" -N "${NAND_CONFIG}" -c "${ubinize_cfg} -d "${outputdir}" "${outputdir}"/rootfs.ubifs
+
+ln -sf "$outputdir/spl-$NAND_EBSIZE-$NAND_PSIZE-${NAND_OSIZE}.bin" "$outputdir/flash-spl.bin"
+ln -sf "$outputdir/uboot-${NAND_EBSIZE}.bin" "$outputdir/flash-uboot.bin"
+ln -sf "$outputdir/uboot-env-$(printf %x $ubootenv_size).bin" "$outputdir/flash-uboot-env.bin"
+ln -sf "$outputdir/chip-$NAND_EBSIZE-${NAND_PSIZE}.ubi.sparse" "$outputdir/flash-rootfs.bin"
+
+rm -rf $tmpdir
+

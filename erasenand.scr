@@ -1,0 +1,3 @@
+echo erasing nand
+nand erase.chip
+fastboot 0

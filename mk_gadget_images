@@ -1,0 +1,68 @@
+#!/bin/bash
+
+SCRIPTDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+source "$SCRIPTDIR/chip_nand_scripts_common"
+
+usage() {
+  echo -e "\n\
+  usage: $(basename $0) [options] BUILDROOT_IMAGES_DIR\n\
+\n
+  options:\n\
+    -N FILENAME         - read nand configuration from FILENAME\n\
+    -c FILENAME         - read ubinize configuration from FILENAME\n\
+    -d OUTPUTDIR        - write files to OUTPUTDIR (default: BUILDROOT_IMAGES_DIR)\n\
+    -h, --help          - show this help\n\
+\n"
+  exit 1
+}
+
+
+while getopts ":N:d:c:" o; do
+    case "${o}" in
+        N)
+            NAND_CONFIG="${OPTARG}"
+            echo "NAND_CONFIG=${OPTARG}"
+            read_nand_config "${OPTARG}"
+            ;;
+        d)
+            OUTPUT_DIR="${OPTARG}"
+            echo "OUTPUT_DIR=${OPTARG}"
+            ;;
+        c)
+            UBINIZE_CONFIG="${OPTARG}"
+            echo "UBINIZE_CONFIG=${OPTARG}"
+            ;;
+        *)
+            usage
+            ;;
+    esac
+done
+shift $((OPTIND-1))
+
+INPUT_DIR="${1?no Buildroot output images directory specified}" || exit 1
+NAND_CONFIG="${NAND_CONFIG?no NAND config specified}" || exit 1
+UBINIZE_CONFIG="${UBINIZE_CONFIG?no ubinize config specified}" || exit 1
+OUTPUT_DIR="${INPUTDIR:-$INPUT_DIR}"
+
+echo "## creating SPL image" 
+echo "${SCRIPTDIR}/mk_spl_image" -N "${NAND_CONFIG}" -d "${OUTPUT_DIR}" "${INPUT_DIR}"/sunxi-spl.bin
+"${SCRIPTDIR}/mk_spl_image" -N "${NAND_CONFIG}" -d "${OUTPUT_DIR}" "${INPUT_DIR}"/sunxi-spl.bin
+
+echo "## creating uboot image" 
+echo "${SCRIPTDIR}/mk_uboot_image" -N "${NAND_CONFIG}" -d "${OUTPUT_DIR}" "${INPUT_DIR}"/u-boot-dtb.bin
+"${SCRIPTDIR}/mk_uboot_image" -N "${NAND_CONFIG}" -d "${OUTPUT_DIR}" "${INPUT_DIR}"/u-boot-dtb.bin
+
+echo "## creating ubifs image" 
+echo "${SCRIPTDIR}/mk_ubifs_image" -N "${NAND_CONFIG}" -o "${OUTPUT_DIR}/rootfs.ubifs" "${INPUT_DIR}"/rootfs.tar
+"${SCRIPTDIR}/mk_ubifs_image" -N "${NAND_CONFIG}" -o "${OUTPUT_DIR}/rootfs.ubifs" "${INPUT_DIR}"/rootfs.tar
+
+echo "## creating ubi image" 
+echo "${SCRIPTDIR}/mk_ubi_image" -N "${NAND_CONFIG}" -c ${UBINIZE_CONFIG} -d "${OUTPUT_DIR}" "${OUTPUT_DIR}"/rootfs.ubifs
+"${SCRIPTDIR}/mk_ubi_image" -N "${NAND_CONFIG}" -c "${UBINIZE_CONFIG}" -d "${OUTPUT_DIR}" "${OUTPUT_DIR}"/rootfs.ubifs
+
+pushd $OUTPUT_DIR
+ln -sf "spl-$NAND_EBSIZE-$NAND_PSIZE-${NAND_OSIZE}.bin" "$OUTPUT_DIR/flash-spl.bin"
+ln -sf "uboot-${NAND_EBSIZE}.bin" "$OUTPUT_DIR/flash-uboot.bin"
+ln -sf "chip-$NAND_EBSIZE-${NAND_PSIZE}.ubi.sparse" "$OUTPUT_DIR/flash-rootfs.bin"
+popd
+
